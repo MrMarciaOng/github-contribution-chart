@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["resvg-py==0.5.0"]
 # ///
-"""Generate a monthly GitHub activity chart using the active gh login."""
+"""Generate monthly activity and daily year-to-date commit charts with gh."""
 
 import argparse
 import base64
@@ -12,9 +12,12 @@ import csv
 from datetime import datetime, timezone
 from html import escape
 import json
+import math
 from pathlib import Path
 import subprocess
 from urllib.request import urlopen
+
+from commits import daily_commit_counts, fetch_ytd_commits
 
 
 ROOT = Path(__file__).resolve().parent
@@ -85,8 +88,9 @@ def fetch(username):
         "query { user(login:" + json.dumps(username)
         + ") { login name url avatarUrl createdAt " + " ".join(fields) + " } }"
     )
-    response["schemaVersion"] = 2
+    response["schemaVersion"] = 3
     response["activity"] = fetch_activity(username)
+    response["commitsYtd"] = fetch_ytd_commits(user["login"], now.isoformat().replace("+00:00", "Z"))
     return response
 
 
@@ -124,24 +128,30 @@ def aggregate(user, from_year, events):
             for month, counts in sorted(months.items())], as_of
 
 
-def svg_chart(user, monthly, avatar_uri, as_of):
-    total = sum(row["count"] for row in monthly)
-    max_count = max(row["count"] for row in monthly)
-    ceiling = max(4, ((max_count + 99) // 100) * 100)
+def svg_chart(user, rows, avatar_uri, as_of, daily=False):
+    total = sum(row["count"] for row in rows)
+    max_count = max(row["count"] for row in rows)
+    rough_step = max(1, max_count / 4)
+    magnitude = 10 ** math.floor(math.log10(rough_step))
+    ceiling = 4 * next(unit * magnitude for unit in [1, 2, 5, 10] if unit * magnitude >= rough_step)
     left, right, top, bottom = 36, 792, 112, 282
-    step = (right - left) / len(monthly)
-    date_label = lambda month: datetime.strptime(month, "%Y-%m").strftime("%b %Y")
-    date_range = f'{date_label(monthly[0]["month"])} – {date_label(monthly[-1]["month"])}'
+    step = (right - left) / len(rows)
+    date_key = "date" if daily else "month"
+    date_label = lambda value: datetime.strptime(value, "%Y-%m-%d" if daily else "%Y-%m").strftime("%d %b %Y" if daily else "%b %Y").lstrip("0")
+    date_range = f'{date_label(rows[0][date_key])} – {date_label(rows[-1][date_key])}'
+    measure = "commits YTD" if daily else "activities"
+    description = ("Daily authored commits on accessible default branches, grouped by UTC author date. Today is partial."
+                   if daily else "Monthly profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. The latest month is partial.")
     pieces = [
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="390" viewBox="0 0 900 390" role="img">',
-        f'<title>{escape(user["login"])}: {total:,} GitHub activities</title>',
-        '<desc>Monthly profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. The latest month is partial.</desc>',
+        f'<title>{escape(user["login"])}: {total:,} {measure}</title>',
+        f'<desc>{description}</desc>',
         '<rect x="1" y="1" width="898" height="388" rx="9" fill="#ffffff" stroke="#d1d9e0" stroke-width="1.5"/>',
         '<defs><clipPath id="avatar"><circle cx="61" cy="56" r="27"/></clipPath></defs>',
         f'<image x="34" y="29" width="54" height="54" xlink:href="{avatar_uri}" clip-path="url(#avatar)"/>',
         '<g font-family="Arial, Helvetica, sans-serif">',
         f'<text x="104" y="51" font-size="21" font-weight="600" fill="#0969da">{escape(user["login"])}</text>',
-        f'<text x="104" y="77" font-size="17" fill="#59636e">{total:,} activities</text>',
+        f'<text x="104" y="77" font-size="17" fill="#59636e">{total:,} {measure}</text>',
         f'<text x="862" y="53" text-anchor="end" font-size="14" fill="#59636e">{date_range}</text>',
     ]
     for i in range(5):
@@ -149,29 +159,41 @@ def svg_chart(user, monthly, avatar_uri, as_of):
         y = bottom - (bottom - top) * count / ceiling
         pieces.append(f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#e3e8ed" stroke-dasharray="4 4"/>')
         pieces.append(f'<text x="802" y="{y + 5:.2f}" font-size="14" fill="#59636e">{count:,.0f}</text>')
-    pieces.append('<text x="873" y="197" transform="rotate(90 873 197)" text-anchor="middle" font-size="15" fill="#59636e">Activities</text>')
-    tick_indices = [i for i, row in enumerate(monthly)
-                    if row["month"].endswith("-01") and (int(row["month"][:4]) - int(monthly[0]["month"][:4])) % 2 == 0]
+    pieces.append(f'<text x="873" y="197" transform="rotate(90 873 197)" text-anchor="middle" font-size="15" fill="#59636e">{"Commits / day" if daily else "Activities"}</text>')
+    if daily:
+        tick_indices = [i for i, row in enumerate(rows) if row["date"][5:] in ["01-01", "03-01", "05-01", "07-01", "09-01", "11-01"]]
+    else:
+        tick_indices = [i for i, row in enumerate(rows)
+                        if row["month"].endswith("-01") and (int(row["month"][:4]) - int(rows[0]["month"][:4])) % 2 == 0]
+    tick_indices = [i for i in tick_indices if i == 0 or (len(rows) - 1 - i) * step >= 110]
     for index in tick_indices:
         x = left + step * (index + .5)
         pieces.append(f'<line x1="{x:.2f}" y1="{top}" x2="{x:.2f}" y2="{bottom}" stroke="#e3e8ed" stroke-dasharray="4 4"/>')
-        pieces.append(f'<text x="{x:.2f}" y="312" text-anchor="{"start" if index == 0 else "middle"}" font-size="14" fill="#59636e">{date_label(monthly[index]["month"])}</text>')
-    for i, row in enumerate(monthly):
+        tick_label = datetime.strptime(rows[index]["date"], "%Y-%m-%d").strftime("%b") if daily else date_label(rows[index][date_key])
+        pieces.append(f'<text x="{x:.2f}" y="312" text-anchor="{"start" if index == 0 else "middle"}" font-size="14" fill="#59636e">{tick_label}</text>')
+    for i, row in enumerate(rows):
         x = left + step * i + .6
         height = (bottom - top) * row["count"] / ceiling
-        pieces.append(f'<rect x="{x:.2f}" y="{bottom-height:.2f}" width="{max(.2, step-1.2):.2f}" height="{height:.2f}" fill="#388bfd" opacity="{.65 if i == len(monthly)-1 else 1}"/>')
-    peak_index = max(range(len(monthly)), key=lambda i: monthly[i]["count"])
+        pieces.append(f'<rect x="{x:.2f}" y="{bottom-height:.2f}" width="{max(.2, step-1.2):.2f}" height="{height:.2f}" fill="#388bfd" opacity="{.65 if i == len(rows)-1 else 1}"/>')
+    peak_index = max(range(len(rows)), key=lambda i: rows[i]["count"])
     peak_x = left + step * (peak_index + .5)
     peak_y = bottom - (bottom - top) * max_count / ceiling
     pieces.append(f'<text x="{peak_x:.2f}" y="{peak_y-10:.2f}" text-anchor="middle" font-size="13" fill="#1f2328">{max_count:,}</text>')
     pieces.append(f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#d1d9e0"/>')
-    pieces.append(f'<text x="{right}" y="312" text-anchor="end" font-size="14" fill="#59636e">{date_label(monthly[-1]["month"])}</text>')
+    if len(rows) > 1:
+        pieces.append(f'<text x="{right}" y="312" text-anchor="end" font-size="14" fill="#59636e">{date_label(rows[-1][date_key])}</text>')
     stamp = datetime.fromisoformat(as_of.replace("Z", "+00:00")).strftime("%d %b %Y").lstrip("0")
-    profile = sum(row["profile_contributions"] for row in monthly)
-    comments = sum(row["comments"] for row in monthly)
-    closed = sum(row["prs_closed"] for row in monthly)
-    pieces.append(f'<text x="36" y="344" font-size="12" fill="#59636e">{profile:,} profile contributions + {comments:,} comments + {closed:,} authored PR closures</text>')
-    pieces.append(f'<text x="36" y="369" font-size="12" fill="#59636e">Available private activity included · latest month partial · as of {stamp}</text>')
+    if daily:
+        summary = "Authored commits · default branches · UTC dates · zero-commit days included"
+        note = f"Accessible public and private repositories · today partial · as of {stamp}"
+    else:
+        profile = sum(row["profile_contributions"] for row in rows)
+        comments = sum(row["comments"] for row in rows)
+        closed = sum(row["prs_closed"] for row in rows)
+        summary = f"{profile:,} profile contributions + {comments:,} comments + {closed:,} authored PR closures"
+        note = f"Available private activity included · latest month partial · as of {stamp}"
+    pieces.append(f'<text x="36" y="344" font-size="12" fill="#59636e">{summary}</text>')
+    pieces.append(f'<text x="36" y="369" font-size="12" fill="#59636e">{note}</text>')
     pieces.append('</g></svg>')
     return "\n".join(pieces)
 
@@ -186,7 +208,8 @@ def main():
     OUTPUT.mkdir(exist_ok=True)
     raw_path = OUTPUT / "github-contributions-raw.json"
     response = json.loads(raw_path.read_text()) if raw_path.exists() and not args.refresh else fetch(username)
-    if response.get("schemaVersion") != 2 or response["data"]["user"]["login"].lower() != username.lower():
+    if (response.get("schemaVersion") != 3 or response["data"]["user"]["login"].lower() != username.lower()
+            or response["commitsYtd"]["asOf"][:4] != str(datetime.now(timezone.utc).year)):
         response = fetch(username)
     raw_path.write_text(json.dumps(response, indent=2) + "\n")
     user = response["data"]["user"]
@@ -216,6 +239,20 @@ def main():
     html = template.replace("__CHART_DATA__", json.dumps(payload).replace("<", "\\u003c"))
     (OUTPUT / "github-activity.html").write_text(html)
     print(f'{user["login"]}: {payload["total"]:,} activities across {len(monthly)} months; outputs in {OUTPUT}')
+    daily = daily_commit_counts(response["commitsYtd"])
+    daily_as_of = response["commitsYtd"]["asOf"]
+    svg = svg_chart(user, daily, avatar_uri, daily_as_of, daily=True)
+    (OUTPUT / "github-commits-ytd.svg").write_text(svg + "\n")
+    (OUTPUT / "github-commits-ytd.png").write_bytes(resvg_py.svg_to_bytes(svg_string=svg, width=2400))
+    with (OUTPUT / "github-commits-ytd.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["date", "count"], lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(daily)
+    daily_payload = {"login": user["login"], "url": user["url"], "avatar": avatar_uri,
+                     "daily": daily, "asOf": daily_as_of, "total": sum(row["count"] for row in daily)}
+    (OUTPUT / "github-commits-ytd-data.json").write_text(json.dumps(daily_payload, indent=2) + "\n")
+    (OUTPUT / "github-commits-ytd.html").write_text(template.replace("__CHART_DATA__", json.dumps(daily_payload).replace("<", "\\u003c")))
+    print(f'{user["login"]}: {daily_payload["total"]:,} commits across {len(daily)} days year to date')
 
 
 if __name__ == "__main__":

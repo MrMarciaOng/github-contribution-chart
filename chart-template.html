@@ -33,26 +33,31 @@
     </header>
     <svg id="chart" role="img" aria-labelledby="chart-title chart-description"></svg>
     <p id="detail" class="detail secondary" aria-live="polite"></p>
-    <footer class="secondary">Comments and PR closures reflect account access. Latest month is partial. <span id="stamp"></span></footer>
+    <footer class="secondary"><span id="coverage"></span> <span id="stamp"></span></footer>
   </section>
   <script>
     (() => {
       const data = __CHART_DATA__;
-      document.title = `GitHub activity · ${data.login}`;
+      const daily = Array.isArray(data.daily);
+      document.title = `GitHub ${daily?'commits YTD':'activity'} · ${data.login}`;
       const root = document.getElementById('github-activity');
+      root.setAttribute('aria-label',daily?'Daily year-to-date commits':'Monthly GitHub activity');
       const chart = root.querySelector('#chart');
       const detail = root.querySelector('#detail');
-      const rows = data.monthly;
-      const formatMonth = month => new Date(month+'-01T00:00:00Z').toLocaleDateString('en-US',{month:'short',year:'numeric',timeZone:'UTC'});
-      const range = `${formatMonth(rows[0].month)} – ${formatMonth(rows.at(-1).month)}`;
+      const rows = daily?data.daily:data.monthly;
+      const dateValue = row => daily?row.date:row.month+'-01';
+      const formatLabel = row => new Date(dateValue(row)+'T00:00:00Z').toLocaleDateString('en-GB',{...(daily?{day:'numeric'}:{}),month:'short',year:'numeric',timeZone:'UTC'});
+      const range = `${formatLabel(rows[0])} – ${formatLabel(rows.at(-1))}`;
+      const measure = daily?'commits YTD':'activities';
       const profile = root.querySelector('#profile');
       profile.textContent = data.login;
       profile.href = data.url;
       root.querySelector('#avatar').src = data.avatar;
-      root.querySelector('#total').textContent = `${data.total.toLocaleString()} activities · ${range}`;
+      root.querySelector('#total').textContent = `${data.total.toLocaleString()} ${measure} · ${range}`;
+      root.querySelector('#coverage').textContent = daily?'Accessible default branches. UTC author dates. Today is partial.':'Comments and PR closures reflect account access. Latest month is partial.';
       root.querySelector('#stamp').textContent = 'As of '+new Date(data.asOf).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'})+'.';
       const totals = key => rows.reduce((sum,row)=>sum+row[key],0).toLocaleString();
-      const summary = `${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`;
+      const summary = daily?'Authored commits per day · zero-commit days included':`${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`;
       detail.textContent = summary;
       const ns = 'http://www.w3.org/2000/svg';
       const add = (name, attrs, text) => {
@@ -67,38 +72,44 @@
         const height = 256;
         const left = 5, right = width-68, top=30, bottom=204;
         const maximum = Math.max(...rows.map(row=>row.count));
-        const ceiling = Math.max(4,Math.ceil(maximum/100)*100);
+        const roughStep = Math.max(1,maximum/4);
+        const magnitude = 10**Math.floor(Math.log10(roughStep));
+        const ceiling = 4*[1,2,5,10].map(unit=>unit*magnitude).find(value=>value>=roughStep);
         const step = (right-left)/rows.length;
         chart.replaceChildren();
         chart.setAttribute('viewBox',`0 0 ${width} ${height}`);
-        add('title',{id:'chart-title'},`${data.login}: ${data.total.toLocaleString()} activities`);
-        add('desc',{id:'chart-description'},`${range}. Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial. Peak ${maximum} activities.`);
-        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},'Activities / month');
+        add('title',{id:'chart-title'},`${data.login}: ${data.total.toLocaleString()} ${measure}`);
+        add('desc',{id:'chart-description'},daily?`${range}. Daily authored commits on accessible default branches, grouped by UTC author date. Zero-commit days included. Today partial.`:`${range}. Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial.`);
+        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},daily?'Commits / day':'Activities / month');
         for(let i=0;i<5;i++) {
           const count=ceiling*i/4, y=bottom-(bottom-top)*count/ceiling;
           add('line',{x1:left,y1:y,x2:right,y2:y,class:'grid'});
           add('text',{x:right+10,y:y+4},Math.round(count).toLocaleString());
         }
         add('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'none',class:'grid','data-chart-frame':''});
-        const ticks = width<480 ? [0,Math.floor((rows.length-1)/2),rows.length-1] : rows.map((row,i)=>row.month.endsWith('-01') && (Number(row.month.slice(0,4))-Number(rows[0].month.slice(0,4)))%2===0 ? i : -1).filter(i=>i>=0).concat(rows.length-1);
+        const candidates = width<480 ? [0,Math.floor((rows.length-1)/2),rows.length-1] : rows.map((row,i)=>(daily?row.date.endsWith('-01') && Number(row.date.slice(5,7))%2===1:row.month.endsWith('-01') && (Number(row.month.slice(0,4))-Number(rows[0].month.slice(0,4)))%2===0) ? i : -1).filter(i=>i>=0).concat(rows.length-1);
+        const ticks = [...new Set(candidates)].filter(index=>index===0 || index===rows.length-1 || (rows.length-1-index)*step>=65);
         ticks.forEach(index=>{
           const x=left+step*(index+.5);
           const anchor=index===0?'start':index===rows.length-1?'end':'middle';
-          add('text',{x,y:227,'text-anchor':anchor},formatMonth(rows[index].month));
+          const tickLabel = daily?new Date(dateValue(rows[index])+'T00:00:00Z').toLocaleDateString('en-GB',{...(width<480 || index===rows.length-1?{day:'numeric'}:{}),month:'short',timeZone:'UTC'}):formatLabel(rows[index]);
+          add('text',{x,y:227,'text-anchor':anchor},tickLabel);
         });
         rows.forEach((row,index)=>{
           const barHeight=(bottom-top)*row.count/ceiling;
-          add('rect',{x:left+step*index+.45,y:bottom-barHeight,width:Math.max(.3,step-.9),height:barHeight,class:'bar',opacity:index===rows.length-1?.65:1,'data-month':row.month,'data-count':row.count});
+          const gap=Math.min(.9,step*.2);
+          add('rect',{x:left+step*index+gap/2,y:bottom-barHeight,width:step-gap,height:barHeight,class:'bar',opacity:index===rows.length-1?.65:1,'data-date':dateValue(row),'data-count':row.count});
         });
         const peak=rows.findIndex(row=>row.count===maximum);
-        add('text',{x:left+step*(peak+.5),y:bottom-(bottom-top)*maximum/ceiling-9,'text-anchor':'middle'},maximum.toLocaleString());
-        add('text',{x:(left+right)/2,y:250,'text-anchor':'middle',class:'axis-title','data-axis':'x'},'Month');
+        const peakX=left+step*(peak+.5);
+        add('text',{x:peakX,y:bottom-(bottom-top)*maximum/ceiling-9,'text-anchor':peakX<left+25?'start':peakX>right-25?'end':'middle'},maximum.toLocaleString());
+        add('text',{x:(left+right)/2,y:250,'text-anchor':'middle',class:'axis-title','data-axis':'x'},daily?'Date (UTC)':'Month');
         const hit=add('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'transparent','data-chart-hit':''});
         const show = event => {
           const bounds=chart.getBoundingClientRect();
           const index=Math.min(rows.length-1,Math.max(0,Math.floor((event.clientX-bounds.left-left)/step)));
           const row=rows[index];
-          detail.textContent=`${formatMonth(row.month)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`;
+          detail.textContent=daily?`${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'commit':'commits'}${index===rows.length-1?' (today, partial)':''}`:`${formatLabel(row)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`;
         };
         hit.addEventListener('pointermove',show);
         hit.addEventListener('click',show);
@@ -113,7 +124,7 @@
         if(document.documentElement.scrollWidth>innerWidth) throw Error('Chart overflows the page');
         const boxes=[...chart.querySelectorAll('text')].map(node=>({text:node.textContent,...Object.fromEntries(['x','y','width','height'].map(key=>[key,node.getBBox()[key]]))}));
         if(boxes.some(box=>box.x<0 || box.x+box.width>root.clientWidth+1)) throw Error('Chart label is clipped');
-        console.log(JSON.stringify({months:bars.length,total:sum,width:root.clientWidth,height:root.getBoundingClientRect().height,labelsFit:true}));
+        console.log(JSON.stringify({period:daily?'day':'month',points:bars.length,total:sum,width:root.clientWidth,height:root.getBoundingClientRect().height,labelsFit:true}));
       });
     })();
   </script>

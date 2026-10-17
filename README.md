@@ -1,8 +1,10 @@
 # GitHub contribution chart
 
-Generate a monthly activity chart for any GitHub account, including comments and closed pull requests. Export a PNG, an SVG, an interactive HTML chart, and a CSV.
+Generate monthly activity and daily year-to-date commit charts for any GitHub account. Export each chart as a PNG, an SVG, interactive HTML, and a CSV.
 
 ![Example chart for MrMarciaOng](output/github-activity.png)
+
+![Daily year-to-date commits for MrMarciaOng](output/github-commits-ytd.png)
 
 ## Generate your chart
 
@@ -29,7 +31,9 @@ To limit the chart to activity since a particular year, add `--from-year`:
 uv run generate_chart.py --from-year 2023 --refresh
 ```
 
-Open `output/github-activity.png` for the image or `output/github-activity.html` for monthly values on hover or tap.
+Open `output/github-activity.png` for monthly activity or `output/github-commits-ytd.png` for daily commits. Each chart also has an `.html` export with values on hover or tap, an `.svg`, and a `.csv`.
+
+`--from-year` limits the monthly chart. The daily chart always starts on January 1 of the current UTC year and ends at the snapshot time. It includes zero-commit days and marks today as partial.
 
 To regenerate the chart from cached data, omit `--refresh`:
 
@@ -38,6 +42,16 @@ uv run generate_chart.py
 ```
 
 ## Read the totals
+
+### Daily year-to-date commits
+
+The daily chart counts commits authored by the target account, including merge commits. It groups author timestamps into UTC dates and counts each commit SHA once across repositories.
+
+The source is [GitHub commit search](https://docs.github.com/en/search-github/searching-on-github/searching-commits), which searches default branches. Results include public and private repositories visible to the authenticated account. Commits on other branches, inaccessible repositories, or commits GitHub has not indexed are outside this chart. These counts can differ from profile contribution totals.
+
+The generator paginates results and splits date ranges to avoid GitHub's 1,000-result search limit. When the search rate limit is reached, it retries twice with waits of up to 60 seconds. It fails if it cannot retrieve a complete search result. The daily CSV contains `date` and `count` columns.
+
+### Monthly activity
 
 The chart combines these counts for each month, starting with the account's creation year:
 
