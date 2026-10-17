@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GitHub contribution chart</title>
+  <style>
+    :root { color-scheme: light dark; --viz-series-1: var(--chart-1, light-dark(#388bfd,#58a6ff)); }
+    * { box-sizing: border-box; }
+    html,body { margin:0; background:transparent; }
+    body { font:14px/1.5 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); color:var(--foreground,light-dark(#1f2328,#f0f6fc)); }
+    #github-activity { padding:12px 0 4px; }
+    #github-activity header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+    #github-activity img { width:46px; height:46px; border-radius:50%; }
+    #github-activity h1 { font:500 18px/1.5 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); margin:0; }
+    #github-activity a { color:inherit; text-decoration:none; }
+    #github-activity .secondary { color:var(--muted-foreground,light-dark(#59636e,#9da7b3)); }
+    #github-activity p { margin:0; }
+    #github-activity svg { display:block; width:100%; height:256px; overflow:visible; }
+    #github-activity svg text { fill:var(--foreground,light-dark(#1f2328,#f0f6fc)); font-size:12px; }
+    #github-activity .grid { stroke:var(--border,light-dark(#d1d9e0,#3d444d)); stroke-opacity:.6; stroke-width:1; }
+    #github-activity .bar { fill:var(--viz-series-1); }
+    #github-activity .bar:last-of-type { opacity:.65; }
+    #github-activity .detail { min-height:24px; font-variant-numeric:tabular-nums; }
+    #github-activity footer { margin-top:6px; font-size:12px; }
+  </style>
+</head>
+<body>
+  <section id="github-activity" aria-label="Monthly GitHub contributions">
+    <header>
+      <img id="avatar" alt="">
+      <div><h1><a id="profile"></a></h1><p id="total" class="secondary"></p></div>
+    </header>
+    <svg id="chart" role="img" aria-labelledby="chart-title chart-description"></svg>
+    <p id="detail" class="detail secondary" aria-live="polite"></p>
+    <footer class="secondary">Includes private activity. Latest month is partial. <span id="stamp"></span></footer>
+  </section>
+  <script>
+    (() => {
+      const data = __CHART_DATA__;
+      document.title = `GitHub contributions · ${data.login}`;
+      const root = document.getElementById('github-activity');
+      const chart = root.querySelector('#chart');
+      const detail = root.querySelector('#detail');
+      const rows = data.monthly;
+      const formatMonth = month => new Date(month+'-01T00:00:00Z').toLocaleDateString('en-US',{month:'short',year:'numeric',timeZone:'UTC'});
+      const range = `${formatMonth(rows[0].month)} – ${formatMonth(rows.at(-1).month)}`;
+      const profile = root.querySelector('#profile');
+      profile.textContent = data.login;
+      profile.href = data.url;
+      root.querySelector('#avatar').src = data.avatar;
+      root.querySelector('#total').textContent = `${data.total.toLocaleString()} contributions · ${range}`;
+      root.querySelector('#stamp').textContent = 'As of '+new Date(data.asOf).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'})+'.';
+      detail.textContent = 'Monthly GitHub profile contributions';
+      const ns = 'http://www.w3.org/2000/svg';
+      const add = (name, attrs, text) => {
+        const element = document.createElementNS(ns,name);
+        for (const [key,value] of Object.entries(attrs)) element.setAttribute(key,value);
+        if (text !== undefined) element.textContent = text;
+        chart.append(element);
+        return element;
+      };
+      function draw() {
+        const width = root.clientWidth;
+        const height = 256;
+        const left = 5, right = width-68, top=30, bottom=204;
+        const maximum = Math.max(...rows.map(row=>row.count));
+        const ceiling = Math.max(5,Math.ceil(maximum/100)*100);
+        const step = (right-left)/rows.length;
+        chart.replaceChildren();
+        chart.setAttribute('viewBox',`0 0 ${width} ${height}`);
+        add('title',{id:'chart-title'},`${data.login}: ${data.total.toLocaleString()} contributions`);
+        add('desc',{id:'chart-description'},`${range}. Monthly contributions including private activity; latest month partial. Peak ${maximum} contributions.`);
+        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},'Contributions / month');
+        for(let i=0;i<4;i++) {
+          const count=ceiling*i/3, y=bottom-(bottom-top)*count/ceiling;
+          add('line',{x1:left,y1:y,x2:right,y2:y,class:'grid'});
+          add('text',{x:right+10,y:y+4},Math.round(count).toLocaleString());
+        }
+        add('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'none',class:'grid','data-chart-frame':''});
+        const ticks = width<480 ? [0,Math.floor((rows.length-1)/2),rows.length-1] : rows.map((row,i)=>row.month.endsWith('-01') && (Number(row.month.slice(0,4))-Number(rows[0].month.slice(0,4)))%2===0 ? i : -1).filter(i=>i>=0).concat(rows.length-1);
+        ticks.forEach(index=>{
+          const x=left+step*(index+.5);
+          const anchor=index===0?'start':index===rows.length-1?'end':'middle';
+          add('text',{x,y:227,'text-anchor':anchor},formatMonth(rows[index].month));
+        });
+        rows.forEach((row,index)=>{
+          const barHeight=(bottom-top)*row.count/ceiling;
+          add('rect',{x:left+step*index+.45,y:bottom-barHeight,width:Math.max(.3,step-.9),height:barHeight,class:'bar',opacity:index===rows.length-1?.65:1,'data-month':row.month,'data-count':row.count});
+        });
+        const peak=rows.findIndex(row=>row.count===maximum);
+        add('text',{x:left+step*(peak+.5),y:bottom-(bottom-top)*maximum/ceiling-9,'text-anchor':'middle'},maximum.toLocaleString());
+        add('text',{x:(left+right)/2,y:250,'text-anchor':'middle',class:'axis-title','data-axis':'x'},'Month');
+        const hit=add('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'transparent','data-chart-hit':''});
+        const show = event => {
+          const bounds=chart.getBoundingClientRect();
+          const index=Math.min(rows.length-1,Math.max(0,Math.floor((event.clientX-bounds.left-left)/step)));
+          const row=rows[index];
+          detail.textContent=`${formatMonth(row.month)} · ${row.count.toLocaleString()} contributions${index===rows.length-1?' (partial month)':''}`;
+        };
+        hit.addEventListener('pointermove',show);
+        hit.addEventListener('click',show);
+        chart.addEventListener('pointerleave',()=>detail.textContent='Monthly GitHub profile contributions',{once:true});
+      }
+      new ResizeObserver(draw).observe(root);
+      draw();
+      requestAnimationFrame(()=>{
+        const bars=chart.querySelectorAll('.bar');
+        const sum=[...bars].reduce((total,bar)=>total+Number(bar.dataset.count),0);
+        if(bars.length!==rows.length || sum!==data.total) throw Error('Chart totals do not match source data');
+        if(document.documentElement.scrollWidth>innerWidth) throw Error('Chart overflows the page');
+        const boxes=[...chart.querySelectorAll('text')].map(node=>({text:node.textContent,...Object.fromEntries(['x','y','width','height'].map(key=>[key,node.getBBox()[key]]))}));
+        if(boxes.some(box=>box.x<0 || box.x+box.width>root.clientWidth+1)) throw Error('Chart label is clipped');
+        console.log(JSON.stringify({months:bars.length,total:sum,width:root.clientWidth,height:root.getBoundingClientRect().height,labelsFit:true}));
+      });
+    })();
+  </script>
+</body>
+</html>

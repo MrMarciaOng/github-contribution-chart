@@ -1,0 +1,6 @@
+.DS_Store
+.venv/
+__pycache__/
+output/*-avatar.png
+output/github-contributions-raw.json
+output/github-activity-data.json
