@@ -1,6 +1,8 @@
 # GitHub contribution chart
 
-Generate monthly activity and daily year-to-date commit charts for any GitHub account. Export each chart as a PNG, an SVG, interactive HTML, and a CSV.
+Generate daily year-to-date contribution and commit charts, plus monthly activity, for any GitHub account. Export each chart as a PNG, an SVG, interactive HTML, and a CSV.
+
+![Daily year-to-date contributions for MrMarciaOng](output/github-contributions-ytd.png)
 
 ![Example chart for MrMarciaOng](output/github-activity.png)
 
@@ -19,10 +21,10 @@ uv run generate_chart.py --refresh
 
 The generator uses your active GitHub CLI account. `uv` installs Python and the pinned rendering dependency as needed.
 
-To generate a chart for another account, pass its username:
+To generate a chart for another account, replace `USERNAME` with its GitHub login:
 
 ```sh
-uv run generate_chart.py --username octocat --refresh
+uv run generate_chart.py --username USERNAME --refresh
 ```
 
 To limit the chart to activity since a particular year, add `--from-year`:
@@ -31,9 +33,9 @@ To limit the chart to activity since a particular year, add `--from-year`:
 uv run generate_chart.py --from-year 2023 --refresh
 ```
 
-Open `output/github-activity.png` for monthly activity or `output/github-commits-ytd.png` for daily commits. Each chart also has an `.html` export with values on hover or tap, an `.svg`, and a `.csv`.
+Open `output/github-contributions-ytd.png` for daily contributions, `output/github-commits-ytd.png` for daily commits, or `output/github-activity.png` for monthly activity. Each chart also has an `.html` export with values on hover or tap, an `.svg`, and a `.csv`.
 
-`--from-year` limits the monthly chart. The daily chart always starts on January 1 of the current UTC year and ends at the snapshot time. It includes zero-commit days and marks today as partial.
+`--from-year` limits the monthly chart. Both daily charts start on January 1 of the current UTC year and end at the snapshot time. They include days with zero activity and mark today as partial.
 
 To regenerate the chart from cached data, omit `--refresh`:
 
@@ -42,6 +44,18 @@ uv run generate_chart.py
 ```
 
 ## Read the totals
+
+### Daily year-to-date contributions
+
+This chart focuses on collaboration, with three categories:
+
+- PRs shipped: PRs authored by the target account, counted when merged. Closing a PR without merging it does not count as shipping.
+- PR reviews: each submitted review, including approvals, requested changes, and comment-only reviews. Draft reviews are excluded. A review that was later dismissed still counts on its submission date.
+- Comments: issue and PR conversations, direct commit comments, discussion replies, and inline review comments authored by the target account. Review-body text counts as part of the review. Individual inline comments count separately.
+
+The chart excludes commits and uses no profile contribution baseline. Each review or comment ID counts once, and each authored PR counts once when shipped. Events use UTC submission, publication, or merge dates. The CSV contains `date`, `count`, `prs_shipped`, `reviews`, and `comments` columns.
+
+Review discovery uses GitHub's [reviewed-by search](https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests#search-by-pull-request-review-status-and-reviewer), then paginates the account's reviews and their comments. The counts include public and private work visible to the authenticated account. Deleted, inaccessible, or unindexed objects are outside this chart. This is a custom contribution count and can differ from GitHub's profile calendar.
 
 ### Daily year-to-date commits
 
@@ -67,7 +81,7 @@ Profile counts follow [GitHub's contribution criteria](https://docs.github.com/e
 
 Private profile activity appears when GitHub exposes its aggregate counts. Extra comments and closures include only objects visible to the authenticated account, so access restrictions can leave gaps. The generator paginates through the historical connections. It does not use the recent-events feed.
 
-The exports contain monthly counts, with no private repository names, comment text, or PR contents.
+The exports contain daily or monthly counts, with no private repository names, comment text, or PR contents.
 
 The files in `output/` show an example for `MrMarciaOng`. Generate your own chart to replace them. Raw daily data, activity IDs and timestamps, and downloaded avatars stay in the local cache and are ignored by Git.
 

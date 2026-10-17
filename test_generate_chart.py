@@ -49,7 +49,7 @@ class ActivityTests(unittest.TestCase):
             {"data": {"user": {"issueComments": {"nodes": [{"id": "first"}], "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}}},
             {"data": {"user": {"issueComments": {"nodes": [{"id": "last"}], "pageInfo": {"hasNextPage": False, "endCursor": "end"}}}}},
         ]
-        with patch("generate_chart.graphql", side_effect=pages) as api:
+        with patch("github_api.graphql", side_effect=pages) as api:
             nodes = list(connection_nodes("example", "issueComments", "id"))
 
         self.assertEqual(nodes, [{"id": "first"}, {"id": "last"}])
@@ -57,7 +57,7 @@ class ActivityTests(unittest.TestCase):
 
     def test_invalid_pagination_fails_instead_of_returning_partial_history(self):
         page = {"data": {"user": {"issueComments": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}}}}
-        with patch("generate_chart.graphql", return_value=page):
+        with patch("github_api.graphql", return_value=page):
             with self.assertRaisesRegex(RuntimeError, "did not advance pagination"):
                 list(connection_nodes("example", "issueComments", "id"))
 

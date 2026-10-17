@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>GitHub activity chart</title>
   <style>
-    :root { color-scheme: light dark; --viz-series-1: var(--chart-1, light-dark(#388bfd,#58a6ff)); }
+    :root { color-scheme: light dark; --viz-series-1: var(--chart-1, light-dark(#388bfd,#58a6ff)); --viz-series-2:var(--chart-2,light-dark(#1a7f37,#3fb950)); --viz-series-3:var(--chart-3,light-dark(#8250df,#bc8cff)); }
     * { box-sizing: border-box; }
     html,body { margin:0; background:transparent; }
     body { font:14px/1.5 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); color:var(--foreground,light-dark(#1f2328,#f0f6fc)); }
     #github-activity { padding:12px 0 4px; }
     #github-activity header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
-    #github-activity img { width:46px; height:46px; border-radius:50%; }
+    #github-activity img { width:46px; height:46px; border-radius:50%; flex-shrink:0; }
     #github-activity h1 { font:500 18px/1.5 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); margin:0; }
     #github-activity a { color:inherit; text-decoration:none; }
     #github-activity .secondary { color:var(--muted-foreground,light-dark(#59636e,#9da7b3)); }
@@ -23,6 +23,10 @@
     #github-activity .bar:last-of-type { opacity:.65; }
     #github-activity .detail { min-height:48px; font-variant-numeric:tabular-nums; }
     #github-activity footer { margin-top:6px; font-size:12px; }
+    #github-activity #legend { display:flex; flex-wrap:wrap; gap:6px 20px; margin-bottom:10px; font-size:12px; }
+    #github-activity #legend[hidden] { display:none; }
+    #github-activity .legend-item { display:inline-flex; align-items:center; gap:6px; }
+    #github-activity .legend-item::before { content:""; width:9px; height:9px; background:var(--series-color); }
   </style>
 </head>
 <body>
@@ -31,6 +35,7 @@
       <img id="avatar" alt="">
       <div><h1><a id="profile"></a></h1><p id="total" class="secondary"></p></div>
     </header>
+    <div id="legend" aria-label="Contribution types" hidden></div>
     <svg id="chart" role="img" aria-labelledby="chart-title chart-description"></svg>
     <p id="detail" class="detail secondary" aria-live="polite"></p>
     <footer class="secondary"><span id="coverage"></span> <span id="stamp"></span></footer>
@@ -39,32 +44,44 @@
     (() => {
       const data = __CHART_DATA__;
       const daily = Array.isArray(data.daily);
-      document.title = `GitHub ${daily?'commits YTD':'activity'} · ${data.login}`;
+      const contribution = data.kind==='contributions';
+      const categories = [['prs_shipped','PRs shipped'],['reviews','PR reviews'],['comments','Comments']];
+      document.title = `GitHub ${contribution?'contributions YTD':daily?'commits YTD':'activity'} · ${data.login}`;
       const root = document.getElementById('github-activity');
-      root.setAttribute('aria-label',daily?'Daily year-to-date commits':'Monthly GitHub activity');
+      root.setAttribute('aria-label',contribution?'Daily year-to-date contributions':daily?'Daily year-to-date commits':'Monthly GitHub activity');
       const chart = root.querySelector('#chart');
       const detail = root.querySelector('#detail');
       const rows = daily?data.daily:data.monthly;
       const dateValue = row => daily?row.date:row.month+'-01';
       const formatLabel = row => new Date(dateValue(row)+'T00:00:00Z').toLocaleDateString('en-GB',{...(daily?{day:'numeric'}:{}),month:'short',year:'numeric',timeZone:'UTC'});
       const range = `${formatLabel(rows[0])} – ${formatLabel(rows.at(-1))}`;
-      const measure = daily?'commits YTD':'activities';
+      const measure = contribution?'contributions YTD':daily?'commits YTD':'activities';
       const profile = root.querySelector('#profile');
       profile.textContent = data.login;
       profile.href = data.url;
       root.querySelector('#avatar').src = data.avatar;
       root.querySelector('#total').textContent = `${data.total.toLocaleString()} ${measure} · ${range}`;
-      root.querySelector('#coverage').textContent = daily?'Accessible default branches. UTC author dates. Today is partial.':'Comments and PR closures reflect account access. Latest month is partial.';
+      root.querySelector('#coverage').textContent = contribution?'Accessible merged PRs, submitted reviews, and posted comments. UTC dates. Today is partial.':daily?'Accessible default branches. UTC author dates. Today is partial.':'Comments and PR closures reflect account access. Latest month is partial.';
       root.querySelector('#stamp').textContent = 'As of '+new Date(data.asOf).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'})+'.';
       const totals = key => rows.reduce((sum,row)=>sum+row[key],0).toLocaleString();
-      const summary = daily?'Authored commits per day · zero-commit days included':`${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`;
+      const contributionDetail = row => `${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'contribution':'contributions'}: ${row.prs_shipped} ${row.prs_shipped===1?'PR':'PRs'} shipped + ${row.reviews} ${row.reviews===1?'review':'reviews'} + ${row.comments} ${row.comments===1?'comment':'comments'}`;
+      const summary = contribution?contributionDetail(rows.at(-1)):daily?'Authored commits per day · zero-commit days included':`${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`;
       detail.textContent = summary;
+      const legend=root.querySelector('#legend');
+      legend.hidden=!contribution;
+      if(contribution)categories.forEach(([key,label],index)=>{
+        const item=document.createElement('span');
+        item.className='legend-item';
+        item.style.setProperty('--series-color',`var(--viz-series-${index+1})`);
+        item.textContent=`${label}: ${totals(key)}`;
+        legend.append(item);
+      });
       const ns = 'http://www.w3.org/2000/svg';
-      const add = (name, attrs, text) => {
+      const add = (name, attrs, text, parent=chart) => {
         const element = document.createElementNS(ns,name);
         for (const [key,value] of Object.entries(attrs)) element.setAttribute(key,value);
         if (text !== undefined) element.textContent = text;
-        chart.append(element);
+        parent.append(element);
         return element;
       };
       function draw() {
@@ -79,8 +96,8 @@
         chart.replaceChildren();
         chart.setAttribute('viewBox',`0 0 ${width} ${height}`);
         add('title',{id:'chart-title'},`${data.login}: ${data.total.toLocaleString()} ${measure}`);
-        add('desc',{id:'chart-description'},daily?`${range}. Daily authored commits on accessible default branches, grouped by UTC author date. Zero-commit days included. Today partial.`:`${range}. Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial.`);
-        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},daily?'Commits / day':'Activities / month');
+        add('desc',{id:'chart-description'},contribution?`${range}. Daily merged PRs authored by the account, submitted reviews, and posted comments. Zero-contribution days included. Today partial.`:daily?`${range}. Daily authored commits on accessible default branches, grouped by UTC author date. Zero-commit days included. Today partial.`:`${range}. Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial.`);
+        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},contribution?'Contributions / day':daily?'Commits / day':'Activities / month');
         for(let i=0;i<5;i++) {
           const count=ceiling*i/4, y=bottom-(bottom-top)*count/ceiling;
           add('line',{x1:left,y1:y,x2:right,y2:y,class:'grid'});
@@ -98,7 +115,16 @@
         rows.forEach((row,index)=>{
           const barHeight=(bottom-top)*row.count/ceiling;
           const gap=Math.min(.9,step*.2);
-          add('rect',{x:left+step*index+gap/2,y:bottom-barHeight,width:step-gap,height:barHeight,class:'bar',opacity:index===rows.length-1?.65:1,'data-date':dateValue(row),'data-count':row.count});
+          const attrs={class:'bar',opacity:index===rows.length-1?.65:1,'data-date':dateValue(row),'data-count':row.count};
+          if(contribution){
+            const group=add('g',attrs);
+            let running=0;
+            categories.forEach(([key],series)=>{
+              const height=(bottom-top)*row[key]/ceiling;
+              running+=height;
+              add('rect',{x:left+step*index+gap/2,y:bottom-running,width:step-gap,height,fill:`var(--viz-series-${series+1})`,'data-category':key,'data-value':row[key]},undefined,group);
+            });
+          } else add('rect',{...attrs,x:left+step*index+gap/2,y:bottom-barHeight,width:step-gap,height:barHeight});
         });
         const peak=rows.findIndex(row=>row.count===maximum);
         const peakX=left+step*(peak+.5);
@@ -109,7 +135,7 @@
           const bounds=chart.getBoundingClientRect();
           const index=Math.min(rows.length-1,Math.max(0,Math.floor((event.clientX-bounds.left-left)/step)));
           const row=rows[index];
-          detail.textContent=daily?`${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'commit':'commits'}${index===rows.length-1?' (today, partial)':''}`:`${formatLabel(row)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`;
+          detail.textContent=contribution?contributionDetail(row):daily?`${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'commit':'commits'}${index===rows.length-1?' (today, partial)':''}`:`${formatLabel(row)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`;
         };
         hit.addEventListener('pointermove',show);
         hit.addEventListener('click',show);
