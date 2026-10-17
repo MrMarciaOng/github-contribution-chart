@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["resvg-py==0.5.0"]
 # ///
-"""Generate a monthly GitHub contribution chart using the active gh login."""
+"""Generate a monthly GitHub activity chart using the active gh login."""
 
 import argparse
 import base64
@@ -32,6 +32,37 @@ def graphql(query):
     return response
 
 
+def connection_nodes(username, field, fields, arguments=""):
+    after = None
+    while True:
+        cursor = f",after:{json.dumps(after)}" if after is not None else ""
+        query = (
+            "query { user(login:" + json.dumps(username) + ") { "
+            + field + "(first:100" + arguments + cursor + ") { nodes { "
+            + fields + " } pageInfo { hasNextPage endCursor } } } }"
+        )
+        connection = graphql(query)["data"]["user"][field]
+        yield from connection["nodes"]
+        page = connection["pageInfo"]
+        if not page["hasNextPage"]:
+            return
+        if not page["endCursor"] or page["endCursor"] == after:
+            raise RuntimeError(f"GitHub did not advance pagination for {field}")
+        after = page["endCursor"]
+
+
+def fetch_activity(username):
+    events = []
+    for field in ["issueComments", "commitComments"]:
+        for node in connection_nodes(username, field, "id createdAt"):
+            events.append({"id": node["id"], "kind": "comments", "occurredAt": node["createdAt"]})
+    for node in connection_nodes(username, "pullRequests", "id closedAt mergedAt", ",states:[CLOSED,MERGED]"):
+        occurred_at = node["closedAt"] or node["mergedAt"]
+        if occurred_at:
+            events.append({"id": node["id"], "kind": "prs_closed", "occurredAt": occurred_at})
+    return events
+
+
 def fetch(username):
     user = graphql(
         "query { user(login:" + json.dumps(username)
@@ -50,14 +81,17 @@ def fetch(username):
             " contributionCalendar { totalContributions weeks"
             " { contributionDays { date contributionCount } } } }"
         )
-    return graphql(
+    response = graphql(
         "query { user(login:" + json.dumps(username)
         + ") { login name url avatarUrl createdAt " + " ".join(fields) + " } }"
     )
+    response["schemaVersion"] = 2
+    response["activity"] = fetch_activity(username)
+    return response
 
 
-def aggregate(user, from_year):
-    months = defaultdict(int)
+def aggregate(user, from_year, events):
+    months = defaultdict(lambda: {"profile_contributions": 0, "comments": 0, "prs_closed": 0})
     dates = set()
     ends = []
     for key, collection in user.items():
@@ -72,38 +106,50 @@ def aggregate(user, from_year):
             assert date not in dates, f"Duplicate contribution day: {date}"
             dates.add(date)
             if int(date[:4]) >= from_year:
-                months[date[:7]] += day["contributionCount"]
+                months[date[:7]]["profile_contributions"] += day["contributionCount"]
     if not months:
         raise ValueError("No data exists for the selected date range")
-    return [{"month": month, "count": months[month]} for month in sorted(months)], max(ends)
+    as_of = max(ends)
+    cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    seen = set()
+    for event in events:
+        key = (event["kind"], event["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        occurred_at = datetime.fromisoformat(event["occurredAt"].replace("Z", "+00:00")).astimezone(timezone.utc)
+        if occurred_at.year >= from_year and occurred_at <= cutoff:
+            months[occurred_at.strftime("%Y-%m")][event["kind"]] += 1
+    return [{"month": month, "count": sum(counts.values()), **counts}
+            for month, counts in sorted(months.items())], as_of
 
 
 def svg_chart(user, monthly, avatar_uri, as_of):
     total = sum(row["count"] for row in monthly)
     max_count = max(row["count"] for row in monthly)
-    ceiling = max(5, ((max_count + 99) // 100) * 100)
+    ceiling = max(4, ((max_count + 99) // 100) * 100)
     left, right, top, bottom = 36, 792, 112, 282
     step = (right - left) / len(monthly)
     date_label = lambda month: datetime.strptime(month, "%Y-%m").strftime("%b %Y")
     date_range = f'{date_label(monthly[0]["month"])} – {date_label(monthly[-1]["month"])}'
     pieces = [
-        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="370" viewBox="0 0 900 370" role="img">',
-        f'<title>{escape(user["login"])}: {total:,} GitHub contributions</title>',
-        '<desc>Monthly GitHub profile contributions, including private activity. The latest month is partial.</desc>',
-        '<rect x="1" y="1" width="898" height="368" rx="9" fill="#ffffff" stroke="#d1d9e0" stroke-width="1.5"/>',
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="390" viewBox="0 0 900 390" role="img">',
+        f'<title>{escape(user["login"])}: {total:,} GitHub activities</title>',
+        '<desc>Monthly profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. The latest month is partial.</desc>',
+        '<rect x="1" y="1" width="898" height="388" rx="9" fill="#ffffff" stroke="#d1d9e0" stroke-width="1.5"/>',
         '<defs><clipPath id="avatar"><circle cx="61" cy="56" r="27"/></clipPath></defs>',
         f'<image x="34" y="29" width="54" height="54" xlink:href="{avatar_uri}" clip-path="url(#avatar)"/>',
         '<g font-family="Arial, Helvetica, sans-serif">',
         f'<text x="104" y="51" font-size="21" font-weight="600" fill="#0969da">{escape(user["login"])}</text>',
-        f'<text x="104" y="77" font-size="17" fill="#59636e">{total:,} contributions</text>',
+        f'<text x="104" y="77" font-size="17" fill="#59636e">{total:,} activities</text>',
         f'<text x="862" y="53" text-anchor="end" font-size="14" fill="#59636e">{date_range}</text>',
     ]
-    for i in range(4):
-        count = ceiling * i / 3
+    for i in range(5):
+        count = ceiling * i / 4
         y = bottom - (bottom - top) * count / ceiling
         pieces.append(f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#e3e8ed" stroke-dasharray="4 4"/>')
         pieces.append(f'<text x="802" y="{y + 5:.2f}" font-size="14" fill="#59636e">{count:,.0f}</text>')
-    pieces.append('<text x="873" y="197" transform="rotate(90 873 197)" text-anchor="middle" font-size="15" fill="#59636e">Contributions</text>')
+    pieces.append('<text x="873" y="197" transform="rotate(90 873 197)" text-anchor="middle" font-size="15" fill="#59636e">Activities</text>')
     tick_indices = [i for i, row in enumerate(monthly)
                     if row["month"].endswith("-01") and (int(row["month"][:4]) - int(monthly[0]["month"][:4])) % 2 == 0]
     for index in tick_indices:
@@ -121,7 +167,11 @@ def svg_chart(user, monthly, avatar_uri, as_of):
     pieces.append(f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#d1d9e0"/>')
     pieces.append(f'<text x="{right}" y="312" text-anchor="end" font-size="14" fill="#59636e">{date_label(monthly[-1]["month"])}</text>')
     stamp = datetime.fromisoformat(as_of.replace("Z", "+00:00")).strftime("%d %b %Y").lstrip("0")
-    pieces.append(f'<text x="36" y="346" font-size="12" fill="#59636e">Monthly contributions · includes private activity · latest month partial · as of {stamp}</text>')
+    profile = sum(row["profile_contributions"] for row in monthly)
+    comments = sum(row["comments"] for row in monthly)
+    closed = sum(row["prs_closed"] for row in monthly)
+    pieces.append(f'<text x="36" y="344" font-size="12" fill="#59636e">{profile:,} profile contributions + {comments:,} comments + {closed:,} authored PR closures</text>')
+    pieces.append(f'<text x="36" y="369" font-size="12" fill="#59636e">Available private activity included · latest month partial · as of {stamp}</text>')
     pieces.append('</g></svg>')
     return "\n".join(pieces)
 
@@ -136,11 +186,11 @@ def main():
     OUTPUT.mkdir(exist_ok=True)
     raw_path = OUTPUT / "github-contributions-raw.json"
     response = json.loads(raw_path.read_text()) if raw_path.exists() and not args.refresh else fetch(username)
-    if response["data"]["user"]["login"].lower() != username.lower():
+    if response.get("schemaVersion") != 2 or response["data"]["user"]["login"].lower() != username.lower():
         response = fetch(username)
     raw_path.write_text(json.dumps(response, indent=2) + "\n")
     user = response["data"]["user"]
-    monthly, as_of = aggregate(user, args.from_year or int(user["createdAt"][:4]))
+    monthly, as_of = aggregate(user, args.from_year or int(user["createdAt"][:4]), response["activity"])
     avatar_path = OUTPUT / f'{user["login"]}-avatar.png'
     if args.refresh or not avatar_path.exists():
         with urlopen(user["avatarUrl"], timeout=30) as stream:
@@ -156,7 +206,7 @@ def main():
     (OUTPUT / "github-activity.svg").write_text(svg + "\n")
     (OUTPUT / "github-activity.png").write_bytes(resvg_py.svg_to_bytes(svg_string=svg, width=2400))
     with (OUTPUT / "github-activity.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=["month", "count"], lineterminator="\n")
+        writer = csv.DictWriter(stream, fieldnames=["month", "count", "profile_contributions", "comments", "prs_closed"], lineterminator="\n")
         writer.writeheader()
         writer.writerows(monthly)
     payload = {"login": user["login"], "url": user["url"], "avatar": avatar_uri,
@@ -165,7 +215,7 @@ def main():
     template = (ROOT / "chart-template.html").read_text()
     html = template.replace("__CHART_DATA__", json.dumps(payload).replace("<", "\\u003c"))
     (OUTPUT / "github-activity.html").write_text(html)
-    print(f'{user["login"]}: {payload["total"]:,} contributions across {len(monthly)} months; outputs in {OUTPUT}')
+    print(f'{user["login"]}: {payload["total"]:,} activities across {len(monthly)} months; outputs in {OUTPUT}')
 
 
 if __name__ == "__main__":
