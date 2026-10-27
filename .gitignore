@@ -3,6 +3,4 @@
 __pycache__/
 output/*-avatar.png
 output/github-contributions-raw.json
-output/github-activity-data.json
-output/github-commits-ytd-data.json
-output/github-contributions-ytd-data.json
+output/*-data.json

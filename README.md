@@ -1,10 +1,14 @@
 # GitHub contribution chart
 
-Generate daily year-to-date contribution and commit charts, plus monthly activity, for any GitHub account. Export each chart as a PNG, an SVG, interactive HTML, and a CSV.
+Generate daily year-to-date contribution and commit charts, plus monthly activity, profile contribution, and PR closure charts, for any GitHub account. Export each chart as a PNG, an SVG, interactive HTML, and a CSV.
 
 ![Daily year-to-date contributions for MrMarciaOng](output/github-contributions-ytd.png)
 
 ![Example chart for MrMarciaOng](output/github-activity.png)
+
+![Monthly profile contributions for MrMarciaOng](output/github-profile-contributions.png)
+
+![Monthly authored PRs closed for MrMarciaOng](output/github-prs-closed.png)
 
 ![Daily year-to-date commits for MrMarciaOng](output/github-commits-ytd.png)
 
@@ -33,9 +37,9 @@ To limit the chart to activity since a particular year, add `--from-year`:
 uv run generate_chart.py --from-year 2023 --refresh
 ```
 
-Open `output/github-contributions-ytd.png` for daily contributions, `output/github-commits-ytd.png` for daily commits, or `output/github-activity.png` for monthly activity. Each chart also has an `.html` export with values on hover or tap, an `.svg`, and a `.csv`.
+Open `output/github-contributions-ytd.png` for daily contributions, `output/github-commits-ytd.png` for daily commits, `output/github-activity.png` for monthly activity, `output/github-profile-contributions.png` for monthly profile contributions, or `output/github-prs-closed.png` for monthly authored PRs closed. Each chart also has an `.html` export with values on hover or tap, an `.svg`, and a `.csv`.
 
-`--from-year` limits the monthly chart. Both daily charts start on January 1 of the current UTC year and end at the snapshot time. They include days with zero activity and mark today as partial.
+`--from-year` limits the monthly charts. Both daily charts start on January 1 of the current UTC year and end at the snapshot time. They include days with zero activity and mark today as partial.
 
 To regenerate the chart from cached data, omit `--refresh`:
 
@@ -80,6 +84,15 @@ The CSV includes `count`, `profile_contributions`, `comments`, and `prs_closed` 
 Profile counts follow [GitHub's contribution criteria](https://docs.github.com/en/account-and-profile/reference/profile-contributions-reference). Inline review comments, discussion comments, deleted comments, and earlier close/reopen cycles are outside the extra comment and closure counts. Review submissions already contribute to the profile count.
 
 Private profile activity appears when GitHub exposes its aggregate counts. Extra comments and closures include only objects visible to the authenticated account, so access restrictions can leave gaps. The generator paginates through the historical connections. It does not use the recent-events feed.
+
+### Monthly profile contributions and PRs closed
+
+Two more monthly charts show single parts of the monthly activity total, over the same months:
+
+- Profile contributions: GitHub's profile contribution count alone, without the extra comments and closures.
+- Authored PRs closed: PRs authored by the target account, merged or closed without merging, counted on their latest closure dates in UTC.
+
+Each CSV contains `month` and `count` columns.
 
 The exports contain daily or monthly counts, with no private repository names, comment text, or PR contents.
 

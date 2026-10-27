@@ -23,6 +23,18 @@ from contributions import daily_contribution_counts, fetch_contributions
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "output"
+CHARTS = {
+    "activity": ("activities", "Activities",
+                 "Monthly profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. The latest month is partial."),
+    "commits": ("commits YTD", "Commits / day",
+                "Daily authored commits on accessible default branches, grouped by UTC author date. Today is partial."),
+    "contributions": ("contributions YTD", "Contributions / day",
+                      "Daily merged PRs authored by the account, submitted PR reviews, and posted comments, grouped by UTC date. Today is partial."),
+    "profile_contributions": ("profile contributions", "Contributions",
+                              "Monthly GitHub profile contributions, such as commits, opened PRs and issues, and submitted PR reviews. The latest month is partial."),
+    "prs_closed": ("authored PRs closed", "PRs closed",
+                   "Monthly authored PRs that were merged or closed without merging, counted on their latest UTC closure dates. The latest month is partial."),
+}
 
 
 def fetch_activity(username):
@@ -101,7 +113,7 @@ def aggregate(user, from_year, events):
 
 
 def svg_chart(user, rows, avatar_uri, as_of, kind="activity"):
-    daily = kind != "activity"
+    daily = kind in ("commits", "contributions")
     collaboration = kind == "contributions"
     total = sum(row["count"] for row in rows)
     max_count = max(row["count"] for row in rows)
@@ -113,10 +125,7 @@ def svg_chart(user, rows, avatar_uri, as_of, kind="activity"):
     date_key = "date" if daily else "month"
     date_label = lambda value: datetime.strptime(value, "%Y-%m-%d" if daily else "%Y-%m").strftime("%d %b %Y" if daily else "%b %Y").lstrip("0")
     date_range = f'{date_label(rows[0][date_key])} – {date_label(rows[-1][date_key])}'
-    measure = "contributions YTD" if collaboration else "commits YTD" if daily else "activities"
-    description = ("Daily merged PRs authored by the account, submitted PR reviews, and posted comments, grouped by UTC date. Today is partial." if collaboration else
-                   "Daily authored commits on accessible default branches, grouped by UTC author date. Today is partial."
-                   if daily else "Monthly profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. The latest month is partial.")
+    measure, axis_label, description = CHARTS[kind]
     pieces = [
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="900" height="390" viewBox="0 0 900 390" role="img">',
         f'<title>{escape(user["login"])}: {total:,} {measure}</title>',
@@ -134,7 +143,6 @@ def svg_chart(user, rows, avatar_uri, as_of, kind="activity"):
         y = bottom - (bottom - top) * count / ceiling
         pieces.append(f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#e3e8ed" stroke-dasharray="4 4"/>')
         pieces.append(f'<text x="802" y="{y + 5:.2f}" font-size="14" fill="#59636e">{count:,.0f}</text>')
-    axis_label = "Contributions / day" if collaboration else "Commits / day" if daily else "Activities"
     pieces.append(f'<text x="873" y="197" transform="rotate(90 873 197)" text-anchor="middle" font-size="15" fill="#59636e">{axis_label}</text>')
     if daily:
         tick_indices = [i for i, row in enumerate(rows) if row["date"][5:] in ["01-01", "03-01", "05-01", "07-01", "09-01", "11-01"]]
@@ -173,12 +181,18 @@ def svg_chart(user, rows, avatar_uri, as_of, kind="activity"):
     elif daily:
         summary = "Authored commits · default branches · UTC dates · zero-commit days included"
         note = f"Accessible public and private repositories · today partial · as of {stamp}"
-    else:
+    elif kind == "activity":
         profile = sum(row["profile_contributions"] for row in rows)
         comments = sum(row["comments"] for row in rows)
         closed = sum(row["prs_closed"] for row in rows)
         summary = f"{profile:,} profile contributions + {comments:,} comments + {closed:,} authored PR closures"
         note = f"Available private activity included · latest month partial · as of {stamp}"
+    elif kind == "profile_contributions":
+        summary = "GitHub profile calendar · commits, opened PRs and issues, PR reviews, and discussions"
+        note = f"Available private activity included · latest month partial · as of {stamp}"
+    else:
+        summary = "Authored PRs merged or closed without merging · counted on latest UTC closure date"
+        note = f"Accessible public and private repositories · latest month partial · as of {stamp}"
     if summary:
         pieces.append(f'<text x="36" y="344" font-size="12" fill="#59636e">{summary}</text>')
     pieces.append(f'<text x="36" y="369" font-size="12" fill="#59636e">{note}</text>')
@@ -188,7 +202,7 @@ def svg_chart(user, rows, avatar_uri, as_of, kind="activity"):
 
 def export_chart(stem, payload):
     import resvg_py
-    rows = payload["monthly"] if payload["kind"] == "activity" else payload["daily"]
+    rows = payload["daily"] if "daily" in payload else payload["monthly"]
     svg = svg_chart(payload, rows, payload["avatar"], payload["asOf"], payload["kind"])
     (OUTPUT / f"{stem}.svg").write_text(svg + "\n")
     (OUTPUT / f"{stem}.png").write_bytes(resvg_py.svg_to_bytes(svg_string=svg, width=2400))
@@ -232,6 +246,10 @@ def main():
     base = {"login": user["login"], "url": user["url"], "avatar": avatar_uri}
     export_chart("github-activity", {**base, "kind": "activity", "monthly": monthly,
                  "asOf": as_of, "total": sum(row["count"] for row in monthly)})
+    for key, stem in [("profile_contributions", "github-profile-contributions"), ("prs_closed", "github-prs-closed")]:
+        series = [{"month": row["month"], "count": row[key]} for row in monthly]
+        export_chart(stem, {**base, "kind": key, "monthly": series,
+                     "asOf": as_of, "total": sum(row["count"] for row in series)})
     daily = daily_commit_counts(response["commitsYtd"])
     export_chart("github-commits-ytd", {**base, "kind": "commits", "daily": daily,
                  "asOf": response["commitsYtd"]["asOf"], "total": sum(row["count"] for row in daily)})

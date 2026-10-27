@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from generate_chart import aggregate, connection_nodes, fetch_activity
+from generate_chart import aggregate, connection_nodes, fetch_activity, svg_chart
 
 
 class ActivityTests(unittest.TestCase):
@@ -29,6 +29,12 @@ class ActivityTests(unittest.TestCase):
             "profile_contributions": 5, "comments": 1, "prs_closed": 1,
         }])
         self.assertEqual(as_of, "2026-01-31T23:59:59Z")
+
+    def test_single_series_monthly_charts_total_their_own_counts(self):
+        rows = [{"month": "2026-01", "count": 2}, {"month": "2026-02", "count": 3}]
+        for kind, measure in [("profile_contributions", "profile contributions"), ("prs_closed", "authored PRs closed")]:
+            svg = svg_chart({"login": "example"}, rows, "", "2026-02-10T00:00:00Z", kind)
+            self.assertIn(f"<title>example: 5 {measure}</title>", svg)
 
     def test_comments_include_conversation_and_commit_comments_and_merge_is_one_closure(self):
         def connections(username, field, fields, arguments=""):

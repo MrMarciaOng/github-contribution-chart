@@ -46,26 +46,47 @@
       const daily = Array.isArray(data.daily);
       const contribution = data.kind==='contributions';
       const categories = [['prs_shipped','PRs shipped'],['reviews','PR reviews'],['comments','Comments']];
-      document.title = `GitHub ${contribution?'contributions YTD':daily?'commits YTD':'activity'} · ${data.login}`;
+      const kind = {
+        activity:{title:'activity',label:'Monthly GitHub activity',measure:'activities',axis:'Activities / month',
+          coverage:'Comments and PR closures reflect account access. Latest month is partial.',
+          description:'Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial.'},
+        commits:{title:'commits YTD',label:'Daily year-to-date commits',measure:'commits YTD',axis:'Commits / day',unit:['commit','commits'],
+          summary:'Authored commits per day · zero-commit days included',
+          coverage:'Accessible default branches. UTC author dates. Today is partial.',
+          description:'Daily authored commits on accessible default branches, grouped by UTC author date. Zero-commit days included. Today partial.'},
+        contributions:{title:'contributions YTD',label:'Daily year-to-date contributions',measure:'contributions YTD',axis:'Contributions / day',
+          coverage:'Accessible merged PRs, submitted reviews, and posted comments. UTC dates. Today is partial.',
+          description:'Daily merged PRs authored by the account, submitted reviews, and posted comments. Zero-contribution days included. Today partial.'},
+        profile_contributions:{title:'profile contributions',label:'Monthly GitHub profile contributions',measure:'profile contributions',axis:'Contributions / month',unit:['profile contribution','profile contributions'],
+          summary:'GitHub profile calendar: commits, opened PRs and issues, PR reviews, and discussions',
+          coverage:'Available private activity included. Latest month is partial.',
+          description:'Monthly GitHub profile contributions, such as commits, opened PRs and issues, and submitted PR reviews. Latest month partial.'},
+        prs_closed:{title:'PRs closed',label:'Monthly authored PRs closed',measure:'authored PRs closed',axis:'PRs closed / month',unit:['PR closed','PRs closed'],
+          summary:'Authored PRs merged or closed without merging, on their latest UTC closure dates',
+          coverage:'Closures reflect account access. Latest month is partial.',
+          description:'Monthly authored PRs that were merged or closed without merging, counted on their latest UTC closure dates. Latest month partial.'},
+      }[data.kind];
+      document.title = `GitHub ${kind.title} · ${data.login}`;
       const root = document.getElementById('github-activity');
-      root.setAttribute('aria-label',contribution?'Daily year-to-date contributions':daily?'Daily year-to-date commits':'Monthly GitHub activity');
+      root.setAttribute('aria-label',kind.label);
       const chart = root.querySelector('#chart');
       const detail = root.querySelector('#detail');
       const rows = daily?data.daily:data.monthly;
       const dateValue = row => daily?row.date:row.month+'-01';
       const formatLabel = row => new Date(dateValue(row)+'T00:00:00Z').toLocaleDateString('en-GB',{...(daily?{day:'numeric'}:{}),month:'short',year:'numeric',timeZone:'UTC'});
       const range = `${formatLabel(rows[0])} – ${formatLabel(rows.at(-1))}`;
-      const measure = contribution?'contributions YTD':daily?'commits YTD':'activities';
+      const measure = kind.measure;
       const profile = root.querySelector('#profile');
       profile.textContent = data.login;
       profile.href = data.url;
       root.querySelector('#avatar').src = data.avatar;
       root.querySelector('#total').textContent = `${data.total.toLocaleString()} ${measure} · ${range}`;
-      root.querySelector('#coverage').textContent = contribution?'Accessible merged PRs, submitted reviews, and posted comments. UTC dates. Today is partial.':daily?'Accessible default branches. UTC author dates. Today is partial.':'Comments and PR closures reflect account access. Latest month is partial.';
+      root.querySelector('#coverage').textContent = kind.coverage;
       root.querySelector('#stamp').textContent = 'As of '+new Date(data.asOf).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'})+'.';
       const totals = key => rows.reduce((sum,row)=>sum+row[key],0).toLocaleString();
       const contributionDetail = row => `${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'contribution':'contributions'}: ${row.prs_shipped} ${row.prs_shipped===1?'PR':'PRs'} shipped + ${row.reviews} ${row.reviews===1?'review':'reviews'} + ${row.comments} ${row.comments===1?'comment':'comments'}`;
-      const summary = contribution?contributionDetail(rows.at(-1)):daily?'Authored commits per day · zero-commit days included':`${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`;
+      const countDetail = (row,index) => `${formatLabel(row)} · ${row.count.toLocaleString()} ${kind.unit[row.count===1?0:1]}${index===rows.length-1?(daily?' (today, partial)':' (partial)'):''}`;
+      const summary = contribution?contributionDetail(rows.at(-1)):data.kind==='activity'?`${totals('profile_contributions')} profile contributions + ${totals('comments')} comments + ${totals('prs_closed')} authored PR closures`:kind.summary;
       detail.textContent = summary;
       const legend=root.querySelector('#legend');
       legend.hidden=!contribution;
@@ -96,8 +117,8 @@
         chart.replaceChildren();
         chart.setAttribute('viewBox',`0 0 ${width} ${height}`);
         add('title',{id:'chart-title'},`${data.login}: ${data.total.toLocaleString()} ${measure}`);
-        add('desc',{id:'chart-description'},contribution?`${range}. Daily merged PRs authored by the account, submitted reviews, and posted comments. Zero-contribution days included. Today partial.`:daily?`${range}. Daily authored commits on accessible default branches, grouped by UTC author date. Zero-commit days included. Today partial.`:`${range}. Profile contributions plus issue/PR conversation comments, commit comments, and closures of authored PRs. Latest month partial.`);
-        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},contribution?'Contributions / day':daily?'Commits / day':'Activities / month');
+        add('desc',{id:'chart-description'},`${range}. ${kind.description}`);
+        add('text',{x:left,y:15,class:'axis-title','data-axis':'y'},kind.axis);
         for(let i=0;i<5;i++) {
           const count=ceiling*i/4, y=bottom-(bottom-top)*count/ceiling;
           add('line',{x1:left,y1:y,x2:right,y2:y,class:'grid'});
@@ -135,7 +156,7 @@
           const bounds=chart.getBoundingClientRect();
           const index=Math.min(rows.length-1,Math.max(0,Math.floor((event.clientX-bounds.left-left)/step)));
           const row=rows[index];
-          detail.textContent=contribution?contributionDetail(row):daily?`${formatLabel(row)} · ${row.count.toLocaleString()} ${row.count===1?'commit':'commits'}${index===rows.length-1?' (today, partial)':''}`:`${formatLabel(row)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`;
+          detail.textContent=contribution?contributionDetail(row):data.kind==='activity'?`${formatLabel(row)} · ${row.count.toLocaleString()} activities${index===rows.length-1?' (partial)':''}: ${row.profile_contributions} profile + ${row.comments} comments + ${row.prs_closed} PR closures`:countDetail(row,index);
         };
         hit.addEventListener('pointermove',show);
         hit.addEventListener('click',show);
