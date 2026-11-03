@@ -47,6 +47,23 @@ To regenerate the chart from cached data, omit `--refresh`:
 uv run generate_chart.py
 ```
 
+## Refresh daily with GitHub Actions
+
+The [Refresh charts](.github/workflows/refresh-charts.yml) workflow regenerates the charts every day at 00:00 UTC and commits any changes to `output/`. GitHub can delay scheduled runs when load is high, and the start of each hour is a busy time.
+
+The default `GITHUB_TOKEN` can read only this repository, so the workflow needs a personal access token:
+
+1. Create a [classic personal access token](https://github.com/settings/tokens/new?scopes=repo,read:org&description=contribution-chart) with the `repo` and `read:org` scopes. A fine-grained token covers only one account or organization, so it would miss private work elsewhere. If an organization enforces SAML single sign-on, authorize the token for that organization.
+2. Save the token as the `CHART_TOKEN` repository secret:
+
+   ```sh
+   gh secret set CHART_TOKEN
+   ```
+
+The charts cover the token owner's account. If the token expires, the workflow fails until you replace the secret. To run the workflow outside the schedule, select **Run workflow** on the Actions tab, or run `gh workflow run refresh-charts.yml`.
+
+The workflow commits as `github-actions[bot]`, so refresh commits don't add to your commit counts.
+
 ## Read the totals
 
 ### Daily year-to-date contributions

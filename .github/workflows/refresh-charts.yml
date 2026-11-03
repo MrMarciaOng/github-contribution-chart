@@ -1,0 +1,48 @@
+name: Refresh charts
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-charts
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      # Without Arial or Liberation Sans, the PNG renderer draws no text.
+      - name: Install fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-liberation
+
+      - name: Generate charts
+        env:
+          GH_TOKEN: ${{ secrets.CHART_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add a CHART_TOKEN repository secret. See the README."
+            exit 1
+          fi
+          uv run generate_chart.py --refresh
+
+      - name: Commit charts
+        run: |
+          git add output
+          if git diff --cached --quiet; then
+            echo "Charts are unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Refresh charts as of $(date -u '+%-d %b %Y')"
+          git pull --rebase
+          git push
