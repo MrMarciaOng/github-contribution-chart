@@ -9,10 +9,11 @@ import time
 
 # GitHub allows 30 searches a minute. Spacing them out also makes its secondary rate limit less likely.
 SEARCH_INTERVAL = 2
+PER_PAGE = 100
 _next_search = 0.0
 
 
-def search_commits(username, start, end, page=1):
+def search_commits(username, start, end):
     global _next_search
     stamp = lambda value: value.strftime("%Y-%m-%dT%H:%M:%SZ")
     query = f"author:{username} author-date:{stamp(start)}..{stamp(end)}"
@@ -22,7 +23,7 @@ def search_commits(username, start, end, page=1):
             time.sleep(wait)
         result = subprocess.run(
             ["gh", "api", "search/commits", "--include", "-X", "GET", "-f", f"q={query}",
-             "-f", "per_page=100", "-f", f"page={page}", "-f", "sort=author-date", "-f", "order=asc"],
+             "-f", f"per_page={PER_PAGE}", "-f", "sort=author-date", "-f", "order=asc"],
             capture_output=True, text=True,
         )
         _next_search = time.monotonic() + SEARCH_INTERVAL
@@ -53,40 +54,33 @@ def search_commits(username, start, end, page=1):
 def fetch_ytd_commits(username, as_of):
     end = datetime.fromisoformat(as_of.replace("Z", "+00:00")).astimezone(timezone.utc).replace(microsecond=0)
     start = datetime(end.year, 1, 1, tzinfo=timezone.utc)
+    authored = lambda item: datetime.fromisoformat(
+        item["commit"]["author"]["date"].replace("Z", "+00:00")).astimezone(timezone.utc)
 
-    def fetch_page(first, last, page, total):
-        # A search that times out on GitHub's side returns incomplete_results; asking again usually works.
+    def search_from(first):
+        # A search that times out on GitHub's side returns incomplete results; asking again usually works.
         for attempt in range(3):
-            response = search_commits(username, first, last, page)
-            if not response["incomplete_results"]:
-                if response["total_count"] != total:
-                    raise RuntimeError("GitHub commit search changed during pagination; run --refresh again")
+            response = search_commits(username, first, end)
+            if not response["incomplete_results"] and len(response["items"]) == min(PER_PAGE, response["total_count"]):
                 return response["items"]
-            print(f"GitHub search returned incomplete results for page {page}; retrying...", file=sys.stderr)
+            print(f"GitHub search returned incomplete results from {first:%Y-%m-%dT%H:%M:%SZ}; retrying...", file=sys.stderr)
         raise RuntimeError("GitHub commit search kept returning incomplete results; run --refresh again")
 
-    def fetch_range(first, last):
-        response = search_commits(username, first, last)
-        if response["incomplete_results"] or response["total_count"] > 1000:
-            seconds = int((last - first).total_seconds())
-            if seconds == 0:
-                raise RuntimeError("GitHub cannot return a complete commit search for this second")
-            middle = first + timedelta(seconds=seconds // 2)
-            return fetch_range(first, middle) + fetch_range(middle + timedelta(seconds=1), last)
-        items = response["items"]
-        for page in range(2, (response["total_count"] + 99) // 100 + 1):
-            items.extend(fetch_page(first, last, page, response["total_count"]))
-        if len(items) != response["total_count"]:
-            raise RuntimeError("GitHub returned an incomplete commit history")
-        return items
-
+    # Each search starts at the latest author date seen so far, instead of asking for page 2, 3, ...
+    # GitHub can report a different total_count on each request, which shifts numbered pages,
+    # and numbered pages stop at 1,000 results. Commits in the boundary second come back twice.
     commits = {}
-    for item in fetch_range(start, end):
-        authored_at = item["commit"]["author"]["date"]
-        instant = datetime.fromisoformat(authored_at.replace("Z", "+00:00")).astimezone(timezone.utc)
-        if start <= instant <= end:
-            commits[item["sha"]] = {"sha": item["sha"], "authoredAt": authored_at}
-    return {"asOf": as_of, "commits": list(commits.values())}
+    cursor = start
+    while True:
+        items = search_from(cursor)
+        for item in items:
+            commits[item["sha"]] = {"sha": item["sha"], "authoredAt": item["commit"]["author"]["date"]}
+        if len(items) < PER_PAGE:
+            return {"asOf": as_of, "commits": list(commits.values())}
+        latest = max(authored(item) for item in items)
+        if latest <= cursor:
+            raise RuntimeError(f"GitHub cannot page past {PER_PAGE} commits authored in the same second")
+        cursor = latest
 
 
 def daily_commit_counts(snapshot):

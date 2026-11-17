@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 import subprocess
@@ -9,6 +9,27 @@ from commits import SEARCH_INTERVAL, daily_commit_counts, fetch_ytd_commits, sea
 
 def commit(sha, date):
     return {"sha": sha, "commit": {"author": {"date": date}}}
+
+
+def at(**offset):
+    return (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(**offset)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def github(history, total_drift={}, replies={}):
+    """Answer search_commits like GitHub: the earliest 100 matches by author date, plus their count.
+
+    total_drift and replies change the response to the nth request (counting from 1)."""
+    authored = lambda item: datetime.fromisoformat(item["commit"]["author"]["date"].replace("Z", "+00:00"))
+    requests = []
+
+    def search(username, first, last):
+        requests.append(first)
+        if len(requests) in replies:
+            return replies[len(requests)]
+        matches = sorted((item for item in history if first <= authored(item) <= last), key=authored)
+        return {"total_count": len(matches) + total_drift.get(len(requests), 0),
+                "incomplete_results": False, "items": matches[:100]}
+    return search
 
 
 OK = subprocess.CompletedProcess([], 0, 'HTTP/2.0 200 OK\r\n\r\n{"total_count": 0, "items": [], "incomplete_results": false}', '')
@@ -56,74 +77,66 @@ class DailyCommitTests(unittest.TestCase):
         self.assertEqual(daily_commit_counts({"asOf": "2026-01-01T12:00:00Z", "commits": []}),
                          [{"date": "2026-01-01", "count": 0}])
 
-    def test_search_paginates_and_deduplicates_the_same_commit_across_repositories(self):
-        first = [commit(str(i), "2026-01-01T10:00:00Z") for i in range(100)]
-        responses = [
-            {"total_count": 101, "incomplete_results": False, "items": first},
-            {"total_count": 101, "incomplete_results": False, "items": [first[0]]},
-        ]
-        with patch("commits.search_commits", side_effect=responses):
+    def test_search_pages_by_author_date_past_1000_commits(self):
+        history = [commit(str(i), at(minutes=i)) for i in range(1001)]
+        with patch("commits.search_commits", side_effect=github(history)) as search:
             snapshot = fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
-        self.assertEqual(len(snapshot["commits"]), 100)
-
-    def test_search_splits_the_date_range_to_retrieve_more_than_1000_commits(self):
-        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2026, 1, 2, tzinfo=timezone.utc)
-
-        def search(username, first, last, page=1):
-            if first == start and last == end:
-                return {"total_count": 1001, "incomplete_results": False, "items": []}
-            prefix, total = ("left", 500) if first == start else ("right", 501)
-            stamp = first.strftime("%Y-%m-%dT%H:%M:%SZ")
-            items = [commit(f"{prefix}-{i}", stamp) for i in range((page-1)*100, min(page*100, total))]
-            return {"total_count": total, "incomplete_results": False, "items": items}
-
-        with patch("commits.search_commits", side_effect=search):
-            snapshot = fetch_ytd_commits("example", end.isoformat())
         self.assertEqual(len(snapshot["commits"]), 1001)
         self.assertEqual(sum(row["count"] for row in daily_commit_counts(snapshot)), 1001)
+        self.assertEqual(search.call_count, 11)
 
-    def test_incomplete_search_cannot_silently_publish_partial_counts(self):
-        response = {"total_count": 1, "incomplete_results": True, "items": []}
-        with patch("commits.search_commits", return_value=response):
-            with self.assertRaisesRegex(RuntimeError, "cannot return a complete commit search"):
-                fetch_ytd_commits("example", "2026-01-01T00:00:00Z")
+    def test_search_deduplicates_the_same_commit_across_repositories(self):
+        history = [commit(str(i), at(minutes=i)) for i in range(150)] + [commit("0", at(minutes=0))]
+        with patch("commits.search_commits", side_effect=github(history)):
+            snapshot = fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
+        self.assertEqual(len(snapshot["commits"]), 150)
+
+    def test_search_keeps_commits_that_share_the_page_boundary_second(self):
+        history = ([commit(f"early-{i}", at(minutes=i)) for i in range(90)]
+                   + [commit(f"same-{i}", at(hours=5)) for i in range(30)])
+        with patch("commits.search_commits", side_effect=github(history)):
+            snapshot = fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
+        self.assertEqual(len(snapshot["commits"]), 120)
+
+    def test_search_fails_when_more_than_a_page_of_commits_share_one_second(self):
+        history = [commit(str(i), at(hours=5)) for i in range(101)]
+        with patch("commits.search_commits", side_effect=github(history)):
+            with self.assertRaisesRegex(RuntimeError, "same second"):
+                fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
+
+    def test_search_ignores_a_total_that_changes_between_requests(self):
+        history = [commit(str(i), at(minutes=i)) for i in range(250)]
+        with patch("commits.search_commits", side_effect=github(history, total_drift={2: 1})):
+            snapshot = fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
+        self.assertEqual(len(snapshot["commits"]), 250)
 
     def test_search_retries_a_page_that_returns_incomplete_results(self):
-        first = [commit(str(i), "2026-01-01T10:00:00Z") for i in range(100)]
-        responses = [
-            {"total_count": 101, "incomplete_results": False, "items": first},
-            {"total_count": 101, "incomplete_results": True, "items": [commit("partial", "2026-01-01T11:00:00Z")]},
-            {"total_count": 101, "incomplete_results": False, "items": [commit("100", "2026-01-01T11:00:00Z")]},
-        ]
-        with patch("commits.search_commits", side_effect=responses) as search:
+        history = [commit(str(i), at(minutes=i)) for i in range(150)]
+        stale = {"total_count": 150, "incomplete_results": True, "items": [commit("stale", at(minutes=1))]}
+        with patch("commits.search_commits", side_effect=github(history, replies={2: stale})) as search:
             snapshot = fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
         shas = {item["sha"] for item in snapshot["commits"]}
-        self.assertEqual(len(shas), 101)
-        self.assertNotIn("partial", shas)
+        self.assertEqual(len(shas), 150)
+        self.assertNotIn("stale", shas)
         self.assertEqual(search.call_count, 3)
 
-    def test_search_fails_when_a_page_stays_incomplete(self):
-        first = {"total_count": 101, "incomplete_results": False,
-                 "items": [commit(str(i), "2026-01-01T10:00:00Z") for i in range(100)]}
-        incomplete = {"total_count": 101, "incomplete_results": True, "items": []}
-        with patch("commits.search_commits", side_effect=[first, incomplete, incomplete, incomplete]):
+    def test_search_fails_when_results_stay_incomplete(self):
+        incomplete = {"total_count": 1, "incomplete_results": True, "items": []}
+        with patch("commits.search_commits", return_value=incomplete):
             with self.assertRaisesRegex(RuntimeError, "kept returning incomplete results"):
                 fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
 
-    def test_search_fails_when_the_total_changes_during_pagination(self):
-        first = {"total_count": 101, "incomplete_results": False,
-                 "items": [commit(str(i), "2026-01-01T10:00:00Z") for i in range(100)]}
-        grown = {"total_count": 102, "incomplete_results": False, "items": [commit("100", "2026-01-01T11:00:00Z")]}
-        with patch("commits.search_commits", side_effect=[first, grown]):
-            with self.assertRaisesRegex(RuntimeError, "changed during pagination"):
+    def test_search_cannot_silently_publish_a_page_shorter_than_its_total(self):
+        short = {"total_count": 5, "incomplete_results": False, "items": [commit(str(i), at(minutes=i)) for i in range(4)]}
+        with patch("commits.search_commits", return_value=short):
+            with self.assertRaisesRegex(RuntimeError, "kept returning incomplete results"):
                 fetch_ytd_commits("example", "2026-01-02T12:00:00Z")
 
     def test_search_waits_between_requests(self):
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         with fake_search([OK, OK]) as sleeps:
             search_commits("example", now, now)
-            search_commits("example", now, now, page=2)
+            search_commits("example", now, now)
         self.assertEqual(sleeps, [SEARCH_INTERVAL])
 
     def test_search_waits_until_the_primary_rate_limit_resets_within_a_bound(self):
