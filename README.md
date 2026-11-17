@@ -84,7 +84,7 @@ The daily chart counts commits authored by the target account, including merge c
 
 The source is [GitHub commit search](https://docs.github.com/en/search-github/searching-on-github/searching-commits), which searches default branches. Results include public and private repositories visible to the authenticated account. Commits on other branches, inaccessible repositories, or commits GitHub has not indexed are outside this chart. These counts can differ from profile contribution totals.
 
-The generator paginates results and splits date ranges to avoid GitHub's 1,000-result search limit. When the search rate limit is reached, it retries twice with waits of up to 60 seconds. It fails if it cannot retrieve a complete search result. The daily CSV contains `date` and `count` columns.
+The generator paginates results and splits date ranges to avoid GitHub's 1,000-result search limit. It spaces search requests 2 seconds apart to stay within GitHub's search rate limits. When GitHub still rate-limits a request, it retries twice, waiting as long as GitHub's response asks, up to 2 minutes. For a secondary rate limit that doesn't say how long to wait, it waits 1 minute, then 2. When GitHub's search times out and returns an incomplete page, it requests that page again, up to twice. It fails if it cannot retrieve a complete search result. The daily CSV contains `date` and `count` columns.
 
 ### Monthly activity
 
